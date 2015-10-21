@@ -1,0 +1,171 @@
+From ecbba9b78e6d5b950b43ed26dd20a1f3089be092 Mon Sep 17 00:00:00 2001
+From: Victoria Martinez de la Cruz <victoria@redhat.com>
+Date: Tue, 13 Oct 2015 12:02:23 -0300
+Subject: [PATCH] Add websocket client for tables updates
+
+Websocket Zaqar-Horizon PoC
+---
+ horizon/static/horizon/js/horizon.realtime.js      | 126 +++++++++++++++++++++
+ horizon/static/horizon/js/horizon.tables.js        |   2 -
+ .../templates/horizon/_scripts.html                |   1 +
+ 3 files changed, 127 insertions(+), 2 deletions(-)
+ create mode 100644 horizon/static/horizon/js/horizon.realtime.js
+
+diff --git a/horizon/static/horizon/js/horizon.realtime.js b/horizon/static/horizon/js/horizon.realtime.js
+new file mode 100644
+index 0000000..54543fd
+--- /dev/null
++++ b/horizon/static/horizon/js/horizon.realtime.js
+@@ -0,0 +1,126 @@
++horizon.realtime = {
++
++  '/project/instances/': {
++
++    "compute.instance.create.start": function(event) {
++      console.log("Instance is being created", event);
++      var $row = $('<tr class="status_unknown ajax-update" />');
++      $row.attr('id', 'instances__row__' + event.instance_id);
++      var base_update_url = '/project/instances/?action=row_update&table=instances&obj_id=';
++      $row.attr('data-update-url', base_update_url + event.instance_id);
++
++      $('#instances').prepend($row);
++      $row.addClass('status_unknown');
++      horizon.datatables.update();
++    },
++
++    "compute.instance.create.end": function(event) {
++      console.log("Instance created", event);
++      var $row = $('#instances tr#instances__row__' + event.instance_id);
++      $row.addClass('status_unknown');
++      horizon.datatables.update();
++    },
++
++    "compute.instance.suspend": function(event) {
++      alert('suspend');
++      console.log("Instance suspended", event);
++      var $row = $('#instances tr#instances__row__' + event['instance_id']);
++      $row.addClass('status_unknown');
++      horizon.datatables.update();
++    },
++
++    "compute.instance.resume": function(event) {
++      alert('resume');
++      console.log("Instance resumed", event);
++      var $row = $('#instances tr#instances__row__' + event.instance_id);
++      $row.addClass('status_unknown');
++      horizon.datatables.update();
++    },
++
++    "compute.instance.delete.start": function(event) {
++      console.log("Instance is being deleted", event);
++      var $row = $('#instances tr#instances__row__' + event.instance_id);
++      $row.addClass('status_unknown');
++      horizon.datatables.update();
++    },
++
++    "compute.instance.delete.end": function(event) {
++      console.log("Instance deleted", event);
++      var $row = $('#instances tr#instances__row__' + event.instance_id);
++      $row.remove();
++    }
++
++  }
++
++};
++
++horizon.addInitFunction(function() {
++  var namespace = window.location.pathname;
++  //var conn = ['//', window.location.host.split(':')[0], ':9000'].join('');
++  //var socket = new SockJS(conn);
++  var socket = new WebSocket('ws://192.168.122.167:9000/');
++
++  window.onbeforeunload = function() {
++    if(horizon.realtime.socket) horizon.realtime.socket.close();
++    horizon.realtime.socket = null;
++  };
++
++  socket.onopen = function () {
++    console.log('Connected to socket.io');
++    horizon.realtime.socket = socket;
++
++    var token = "faf70c4608424a1db556e68dc3e8c32a"
++    var project_id = "db6c26f70d904fec8aada5ecbf0832ac"
++    var client_id = "4c339d8f-bd82-4d8c-876c-34e030e0e2e8"
++
++    send_message = function(action, headers, body) {
++      var msg = {'action': action}
++    
++      if (headers) {
++        msg['headers'] = headers
++      } else {
++        msg['headers'] = {'Client-ID': client_id, 'X-Project-ID': project_id}
++      }
++
++      if (body) {
++        msg['body'] = body;
++      }
++
++      socket.send(JSON.stringify(msg));
++    }
++
++    // login
++    send_message('authenticate', {'X-Auth-Token': token,
++                                  'Client-ID': client_id,
++                                  'X-Project-ID': project_id}, null);
++
++
++    // subscribe, it should be ok to subscribe many times since zaqar won't
++    // create duplicated subscription.
++    // actually... it does complain
++    send_message('subscription_create', null,
++                {'queue_name': 'horizon', 'ttl': 3600});
++
++  };
++
++  socket.onclose = function () {
++    console.log('Closed socket.io connection', socket);
++    horizon.datatables.update();
++    horizon.realtime.socket = null;
++  };
++
++  socket.onmessage = function(e) {
++    alert(e.data);
++    response = JSON.parse(e.data);
++    body = response['body']
++    if (body.hasOwnProperty('resource_metadata')) {
++        metadata = body['resource_metadata'];
++        if (metadata.hasOwnProperty('event_type')) {
++            namespace = window.location.href.replace(window.location.origin+'/dashboard', '');
++            event_type = metadata['event_type'];
++            handler = horizon.realtime[namespace][event_type];
++            if(handler) handler(body['payload']);
++        }
++    }
++  };
++});
+diff --git a/horizon/static/horizon/js/horizon.tables.js b/horizon/static/horizon/js/horizon.tables.js
+index c52cf40..bf8334a 100644
+--- a/horizon/static/horizon/js/horizon.tables.js
++++ b/horizon/static/horizon/js/horizon.tables.js
+@@ -589,6 +589,4 @@ horizon.addInitFunction(horizon.datatables.init = function() {
+     horizon.datatables.validate_button($(tab).find(".table_wrapper > form"));
+     horizon.datatables.disable_actions_on_submit($(tab).find(".table_wrapper > form"));
+   });
+-
+-  horizon.datatables.update();
+ });
+diff --git a/openstack_dashboard/templates/horizon/_scripts.html b/openstack_dashboard/templates/horizon/_scripts.html
+index 226a2fe..4219df7 100644
+--- a/openstack_dashboard/templates/horizon/_scripts.html
++++ b/openstack_dashboard/templates/horizon/_scripts.html
+@@ -40,6 +40,7 @@
+ </script>
+ <script src='{{ STATIC_URL }}horizon/js/horizon.selenium.js'></script>
+ <script src='{{ STATIC_URL }}horizon/js/horizon.quota.js'></script>
++<script src='{{ STATIC_URL }}horizon/js/horizon.realtime.js'></script>
+ <script src='{{ STATIC_URL }}horizon/js/horizon.tables.js'></script>
+ <script src='{{ STATIC_URL }}horizon/js/horizon.tables_inline_edit.js'></script>
+ <script src='{{ STATIC_URL }}horizon/js/horizon.tabs.js'></script>
+-- 
+1.9.1
+

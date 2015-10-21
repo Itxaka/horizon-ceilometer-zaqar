@@ -1,0 +1,130 @@
+From 0be6ce8dff4749e323d6f0f1d90c63311d2e05a1 Mon Sep 17 00:00:00 2001
+From: Victoria Martinez de la Cruz <victoria@redhat.com>
+Date: Tue, 13 Oct 2015 12:01:43 -0300
+Subject: [PATCH] Add Zaqar Publisher
+
+Websocket Zaqar-Horizon intergration PoC
+---
+ ceilometer/publisher/zaqar.py | 90 +++++++++++++++++++++++++++++++++++++++++++
+ setup.cfg                     |  2 +
+ 2 files changed, 92 insertions(+)
+ create mode 100644 ceilometer/publisher/zaqar.py
+
+diff --git a/ceilometer/publisher/zaqar.py b/ceilometer/publisher/zaqar.py
+new file mode 100644
+index 0000000..a1b0d6b
+--- /dev/null
++++ b/ceilometer/publisher/zaqar.py
+@@ -0,0 +1,90 @@
++# Copyright 2015 Red Hat Inc.
++#
++# Licensed under the Apache License, Version 2.0 (the "License"); you may
++# not use this file except in compliance with the License. You may obtain
++# a copy of the License at
++#
++#      http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++# License for the specific language governing permissions and limitations
++# under the License.
++
++from zaqarclient.queues import client
++from oslo_log import log
++from oslo_serialization import jsonutils
++from oslo_utils import netutils
++from six.moves.urllib import parse as urlparse
++
++from ceilometer.i18n import _LE
++from ceilometer.publisher import messaging
++
++LOG = log.getLogger(__name__)
++
++
++class ZaqarPublisher(messaging.MessagingPublisher):
++    """Publish metering data to zaqar.
++
++    To enable this publisher, add the following section to the
++    /etc/ceilometer/pipeline.yaml file or simply add it to an existing
++    pipeline::
++
++        meter:
++            - name: meter_zaqar
++            interval: 600
++            counters:
++                - "*"
++            transformers:
++            sinks:
++                - zaqar_sink
++        sinks:
++            - name: zaqar_sink
++            transformers:
++            publishers:
++                - zaqar://
++    """
++
++    def __init__(self, parsed_url):
++        super(ZaqarPublisher, self).__init__(parsed_url)
++        options = urlparse.parse_qs(parsed_url.query)
++
++        self._client = None
++        #self._topic = options.get('topic', ['ceilometer'])[-1]
++
++    def _ensure_connection(self):
++        if self._client:
++            return
++
++        # TODO Get zaqar endpoint from keystone
++        endpoint = 'http://192.168.122.167:8888'
++        conf = {'auth_opts':
++                {'backend': 'keystone',
++                 'options': {'os_username': 'admin',
++                             'os_password': 'devstack',
++                             'os_project_id': 'db6c26f70d904fec8aada5ecbf0832ac',
++                             'os_project_name': 'admin',
++                             'os_auth_url': 'http://192.168.122.167:5000/v2.0/',
++                             'insecure': ''}
++                 }
++                }
++
++        try:
++            self._client = client.Client(endpoint, version=1.1, conf=conf)
++        except Exception as e:
++            LOG.exception(_LE("Failed to connect to Zaqar service: %s"), e)
++            raise messaging.DeliveryFailure('Zaqar client is not available. %s', e)
++
++    def _send(self, context, event_type, data):
++        self._ensure_connection()
++        try:
++            queue_name = 'horizon'
++            messages = []
++            for d in data:
++                messages.append({'body': d, 'ttl': 3600})
++
++            queue = self._client.queue(queue_name)
++            queue.post(messages)
++        except Exception as e:
++            messaging.raise_delivery_failure(e)
+diff --git a/setup.cfg b/setup.cfg
+index ff4905b..409720c 100644
+--- a/setup.cfg
++++ b/setup.cfg
+@@ -236,12 +236,14 @@ ceilometer.publisher =
+     file = ceilometer.publisher.file:FilePublisher
+     direct = ceilometer.publisher.direct:DirectPublisher
+     kafka = ceilometer.publisher.kafka_broker:KafkaBrokerPublisher
++    zaqar = ceilometer.publisher.zaqar:ZaqarPublisher
+ 
+ ceilometer.event.publisher =
+     test = ceilometer.publisher.test:TestPublisher
+     direct = ceilometer.publisher.direct:DirectPublisher
+     notifier = ceilometer.publisher.messaging:EventNotifierPublisher
+     kafka = ceilometer.publisher.kafka_broker:KafkaBrokerPublisher
++    zaqar = ceilometer.publisher.zaqar:ZaqarPublisher
+ 
+ ceilometer.alarm.rule =
+     threshold = ceilometer.api.controllers.v2.alarm_rules.threshold:AlarmThresholdRule
+-- 
+1.9.1
+
